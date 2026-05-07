@@ -1,0 +1,52 @@
+{
+  "name": "jjvs",
+  "displayName": "jjvs",
+  "description": "Jujutsu (jj) VCS integration for Visual Studio Code",
+  "version": "0.0.1",
+  "publisher": "zhoukz",
+  "private": true,
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/zhoukezi/jjvs.git"
+  },
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "SCM Providers"
+  ],
+  "keywords": [
+    "jj",
+    "jujutsu",
+    "vcs",
+    "scm"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "jjvs.helloWorld",
+        "title": "jjvs: Hello World"
+      }
+    ],
+    "configuration": {
+      "title": "jjvs",
+      "properties": {}
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "bun run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "typecheck": "tsc --noEmit -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.90.0",
+    "typescript": "^5.4.0"
+  }
+}
