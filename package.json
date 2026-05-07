@@ -1,7 +1,7 @@
 {
   "name": "jjvs",
   "displayName": "jjvs",
-  "description": "Jujutsu (jj) VCS integration for Visual Studio Code",
+  "description": "Jujutsu (jj) 版本控制系统的 Visual Studio Code 集成扩展。",
   "version": "0.0.1",
   "publisher": "zhoukz",
   "private": true,
@@ -23,16 +23,10 @@
     "scm"
   ],
   "activationEvents": [
-    "onStartupFinished"
+    "workspaceContains:.jj"
   ],
   "main": "./out/extension.js",
   "contributes": {
-    "commands": [
-      {
-        "command": "jjvs.helloWorld",
-        "title": "jjvs: Hello World"
-      }
-    ],
     "configuration": {
       "title": "jjvs",
       "properties": {}
