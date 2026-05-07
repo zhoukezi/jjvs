@@ -16,7 +16,7 @@ class JjSourceControl implements vscode.Disposable {
 
 		this.placeholderGroup = this.sourceControl.createResourceGroup(
 			"jjvs.placeholder",
-			"工作副本（M0 占位）",
+			"工作副本（M1 占位）",
 		);
 		this.placeholderGroup.hideWhenEmpty = false;
 	}

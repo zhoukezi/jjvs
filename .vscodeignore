@@ -6,3 +6,15 @@ tsconfig.json
 .gitignore
 *.vsix
 bun.lock
+
+# native 子项目：仅保留 .node 产物，源码与中间产物一律排除
+native/src/**
+native/target/**
+native/node_modules/**
+native/Cargo.toml
+native/Cargo.lock
+native/build.rs
+native/package.json
+native/.gitignore
+native/index.d.ts
+native/bun.lock

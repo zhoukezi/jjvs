@@ -1,0 +1,70 @@
+import * as fs from "node:fs";
+import * as path from "node:path";
+
+// TS 侧与 napi-rs 原生绑定之间的唯一边界。
+// 方针：扩展强依赖原生绑定，任何加载失败（平台不符 / 产物缺失 / 导出错配 /
+// require 抛错）都直接向上抛出，由 activate 让 VSCode 把"扩展激活失败"展示
+// 出来——不存在任何降级路径。
+// 类型定义在 TS 侧手写，不依赖构建时生成的 native/index.d.ts，避免「必须先
+// 跑 build:native 才能 typecheck」的耦合。
+
+export interface WorkspaceProbe {
+	isJjWorkspace: boolean;
+	workspaceRoot: string;
+	currentCommitId: string | null;
+}
+
+export interface NativeBinding {
+	nativeVersion(): string;
+	probeWorkspace(workspacePath: string): WorkspaceProbe;
+}
+
+// M1 仅构建 x86_64-unknown-linux-gnu；其他平台一律视为不可用。
+const SUPPORTED_PLATFORM = "linux";
+const SUPPORTED_ARCH = "x64";
+
+function resolveWrapperPath(): string {
+	// __dirname 是编译后 out/ 目录；native/ 与 out/ 同级在仓库根。
+	return path.join(__dirname, "..", "native", "index.js");
+}
+
+let cached: NativeBinding | undefined;
+
+export function loadNativeBinding(): NativeBinding {
+	if (cached) {
+		return cached;
+	}
+	cached = loadOnce();
+	return cached;
+}
+
+function loadOnce(): NativeBinding {
+	if (
+		process.platform !== SUPPORTED_PLATFORM ||
+		process.arch !== SUPPORTED_ARCH
+	) {
+		throw new Error(
+			`jjvs 仅支持 Linux x86_64（当前：${process.platform}/${process.arch}）。`,
+		);
+	}
+
+	const wrapperPath = resolveWrapperPath();
+	if (!fs.existsSync(wrapperPath)) {
+		throw new Error(
+			`未找到原生绑定 wrapper：${wrapperPath}。请在仓库根目录运行 \`bun run build:native\` 构建后重试。`,
+		);
+	}
+
+	// require 抛错（wrapper 内找不到 .node / .node 与 Node ABI 不匹配 / 动态
+	// 链接失败等）直接向上冒泡——不在这里捕获伪装成结构化错误。
+	const mod = require(wrapperPath) as Partial<NativeBinding>;
+	if (
+		typeof mod.nativeVersion !== "function" ||
+		typeof mod.probeWorkspace !== "function"
+	) {
+		throw new Error(
+			`原生绑定缺少期望的导出函数，TS 与 Rust 侧 API 版本错配。wrapper：${wrapperPath}`,
+		);
+	}
+	return mod as NativeBinding;
+}

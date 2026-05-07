@@ -1,0 +1,23 @@
+[package]
+name = "jjvs-native"
+version = "0.0.1"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+napi = { version = "3", features = ["napi6"] }
+napi-derive = "3"
+# jj-lib 在 crates.io 上随 jj CLI 发版，明确标注 experimental、无 lib 层稳定性承诺。
+# M1 第一阶段仅引入依赖验证编译链路，真实业务调用在第二阶段接入。
+jj-lib = "=0.40.0"
+
+[build-dependencies]
+# napi-build 没有发布 3.x 稳定版本（3.0.0-beta.0 已被 yank），官方 3.x 项目
+# 模板仍使用 2.x 系列；搭配 napi/napi-derive 3.x 使用。
+napi-build = "2.3"
+
+[profile.release]
+lto = true

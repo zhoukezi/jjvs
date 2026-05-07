@@ -34,9 +34,11 @@
   },
   "scripts": {
     "vscode:prepublish": "bun run compile",
-    "compile": "tsc -p ./",
+    "compile": "tsc -p ./ && bun run build:native",
     "watch": "tsc -watch -p ./",
-    "typecheck": "tsc --noEmit -p ./"
+    "typecheck": "tsc --noEmit -p ./",
+    "build:native": "cd native && bun install && bun run build",
+    "build:native:debug": "cd native && bun install && bun run build:debug"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

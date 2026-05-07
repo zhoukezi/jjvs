@@ -2,3 +2,9 @@ node_modules/
 out/
 *.vsix
 .vscode-test/
+
+native/target/
+native/node_modules/
+native/*.node
+native/index.d.ts
+native/index.js
