@@ -49,6 +49,11 @@ export interface NativeBinding {
 	isPathIgnored(workspacePath: string, repoPath: string): Promise<boolean>;
 	/** 清空指定 workspace 的 ignore 链缓存。`.gitignore` 变更后调用。 */
 	invalidateIgnoreCache(workspacePath: string): void;
+	/**
+	 * 判断指定 jj workspace 是否与 Git 仓库 colocated（.jj 与 .git 共存于同一
+	 * 根）。判定逻辑对齐 `jj git colocation status`。
+	 */
+	isColocatedWorkspace(workspacePath: string): boolean;
 }
 
 // M1 仅构建 x86_64-unknown-linux-gnu；其他平台一律视为不可用。
@@ -96,7 +101,8 @@ function loadOnce(): NativeBinding {
 		typeof mod.listChanges !== "function" ||
 		typeof mod.readFileAtCommit !== "function" ||
 		typeof mod.isPathIgnored !== "function" ||
-		typeof mod.invalidateIgnoreCache !== "function"
+		typeof mod.invalidateIgnoreCache !== "function" ||
+		typeof mod.isColocatedWorkspace !== "function"
 	) {
 		throw new Error(
 			`原生绑定缺少期望的导出函数，TS 与 Rust 侧 API 版本错配。wrapper：${wrapperPath}`,

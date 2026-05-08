@@ -59,7 +59,23 @@
     },
     "configuration": {
       "title": "jjvs",
-      "properties": {}
+      "properties": {
+        "jjvs.quickDiff.mode": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "enabled",
+            "disabled"
+          ],
+          "enumDescriptions": [
+            "colocated 仓库（同时含 .jj 与 .git）下禁用，避免与内置 Git 扩展的行级 diff 重叠；否则启用。",
+            "无论是否 colocated，始终启用 jj 的行级 diff。",
+            "始终禁用 jj 的行级 diff。"
+          ],
+          "default": "auto",
+          "description": "编辑器侧栏（gutter）行级 diff 的启用策略。对比基准为当前 change 的第一个父 commit。"
+        }
+      }
     }
   },
   "scripts": {

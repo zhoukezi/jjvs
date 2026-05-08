@@ -2,7 +2,7 @@ import * as path from "node:path";
 
 import * as vscode from "vscode";
 
-import type { FileChangeForDiff } from "./diff";
+import { buildDiffUri, type FileChangeForDiff } from "./diff";
 import {
 	type FileChange,
 	type FileChangeKind,
@@ -67,6 +67,11 @@ function buildResourceState(
 /** 装饰 URI 广播形式：`undefined` 表示整棵树需要刷新（如 .gitignore 变更）。 */
 export type DecorationChange = vscode.Uri[] | undefined;
 
+/** quickDiffProvider 的启用模式，与 `jjvs.quickDiff.mode` 配置 schema 一一对应。 */
+type QuickDiffMode = "auto" | "enabled" | "disabled";
+
+const QUICK_DIFF_CONFIG_KEY = "jjvs.quickDiff.mode";
+
 export class JjSourceControl implements vscode.Disposable {
 	private readonly sourceControl: vscode.SourceControl;
 	private readonly changesGroup: vscode.SourceControlResourceGroup;
@@ -81,6 +86,20 @@ export class JjSourceControl implements vscode.Disposable {
 	 * 不能再从 resourceStates 反推（会丢失 kind）。
 	 */
 	private readonly changeIndex = new Map<string, FileChangeKind>();
+
+	/**
+	 * 当前 change 的第一父 commit id，供 quickDiffProvider 构造 `jjvs://` URI
+	 * 使用。首次 `doRefresh` 成功前为 undefined，此时 quickDiff 回退为「无原始
+	 * 资源」，VSCode 不绘 gutter。
+	 */
+	private parentCommitId: string | undefined;
+
+	/**
+	 * 仓库是否与 Git colocated。构造时通过 native 判定一次，仓库生命周期内不
+	 * 重查——用户极端操作（手动 `rm -rf .git` / `git init`）后需要重启窗口或
+	 * 重新打开 workspace folder 才能感知。
+	 */
+	private readonly isColocated: boolean;
 
 	private readonly decorationEmitter =
 		new vscode.EventEmitter<DecorationChange>();
@@ -100,6 +119,11 @@ export class JjSourceControl implements vscode.Disposable {
 			"工作副本变更",
 		);
 		this.changesGroup.hideWhenEmpty = true;
+
+		this.isColocated = loadNativeBinding().isColocatedWorkspace(
+			folder.uri.fsPath,
+		);
+		this.updateQuickDiffProvider();
 
 		this.disposables.push(
 			this.changesGroup,
@@ -230,6 +254,8 @@ export class JjSourceControl implements vscode.Disposable {
 			return;
 		}
 
+		this.parentCommitId = result.parentCommitId;
+
 		const states = result.changes.map((change) =>
 			buildResourceState(result.workspaceRoot, result.parentCommitId, change),
 		);
@@ -266,6 +292,57 @@ export class JjSourceControl implements vscode.Disposable {
 		}
 	}
 
+	/**
+	 * 根据 `jjvs.quickDiff.mode` 配置与 colocation 状态决定是否挂
+	 * quickDiffProvider。构造时调用一次、`jjvs.quickDiff.mode` 变更时由
+	 * `JjRepositoryManager` 再次调用。
+	 */
+	updateQuickDiffProvider(): void {
+		// 默认值由 package.json 的 contributes.configuration 提供，这里不再重复
+		// 写 fallback，避免"默认值多处定义"。配置被手改成非 enum 值时 VSCode 会
+		// 让 `.get` 返回 undefined，本方法按"不挂" 处理——严格模式下不挂比挂错
+		// 方向好。
+		const mode = vscode.workspace
+			.getConfiguration("jjvs", this.folder.uri)
+			.get<QuickDiffMode>("quickDiff.mode");
+
+		const shouldAttach =
+			mode === "enabled" || (mode === "auto" && !this.isColocated);
+
+		this.sourceControl.quickDiffProvider = shouldAttach
+			? {
+					provideOriginalResource: (uri) => this.provideOriginalResource(uri),
+				}
+			: undefined;
+	}
+
+	/**
+	 * quickDiffProvider 回调：只有状态为 `modified` 的工作副本文件需要返回父
+	 * change 下的原始内容，其它（未改 / added / removed / 非本仓库）返回
+	 * undefined，让 VSCode 回退为「无 gutter 标记」。
+	 */
+	private provideOriginalResource(uri: vscode.Uri): vscode.Uri | undefined {
+		if (uri.scheme !== "file") {
+			return undefined;
+		}
+		if (!this.containsUri(uri)) {
+			return undefined;
+		}
+		if (this.changeIndex.get(uri.fsPath) !== "modified") {
+			return undefined;
+		}
+		if (this.parentCommitId === undefined) {
+			return undefined;
+		}
+		const rel = path.relative(this.folder.uri.fsPath, uri.fsPath);
+		const repoPath = rel.split(path.sep).join("/");
+		return buildDiffUri(uri.fsPath, {
+			workspace: this.folder.uri.fsPath,
+			commit: this.parentCommitId,
+			repoPath,
+		});
+	}
+
 	dispose(): void {
 		if (this.refreshTimer) {
 			clearTimeout(this.refreshTimer);
@@ -296,6 +373,15 @@ export class JjRepositoryManager implements vscode.Disposable {
 		this.disposables.push(
 			this.decorationEmitter,
 			vscode.workspace.onDidChangeWorkspaceFolders(() => this.syncAll()),
+			vscode.workspace.onDidChangeConfiguration((event) => {
+				for (const repo of this.repositories.values()) {
+					if (
+						event.affectsConfiguration(QUICK_DIFF_CONFIG_KEY, repo.folder.uri)
+					) {
+						repo.updateQuickDiffProvider();
+					}
+				}
+			}),
 		);
 	}
 
