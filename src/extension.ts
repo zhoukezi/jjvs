@@ -1,12 +1,28 @@
-import type * as vscode from "vscode";
+import * as vscode from "vscode";
 
+import { registerDiffIntegration } from "./diff";
 import { loadNativeBinding } from "./native";
+import { isJjRepository } from "./repository";
 import { JjRepositoryManager } from "./scm";
 
 export function activate(context: vscode.ExtensionContext): void {
 	// 提前触发原生绑定加载：任何失败立即抛出，让扩展激活显式失败，
-	// 而非推迟到 M2 的某个具体调用点才暴露问题。
-	loadNativeBinding();
+	// 而非推迟到 SCM 面板刷新或打开 diff 时才暴露问题。
+	const native = loadNativeBinding();
+
+	// 健康检查：nativeVersion 确认 .node 可正常 dispatch 且返回值结构正确；
+	// probeWorkspace 对每个识别为 jj 仓库的 workspace folder 真跑一次
+	// Workspace::load，把平台 / 依赖不兼容问题前置到激活期——否则要等用户
+	// 触发 SCM 刷新才暴露出来。
+	native.nativeVersion();
+	for (const folder of vscode.workspace.workspaceFolders ?? []) {
+		if (!isJjRepository(folder.uri)) {
+			continue;
+		}
+		native.probeWorkspace(folder.uri.fsPath);
+	}
+
+	registerDiffIntegration(context);
 	const manager = new JjRepositoryManager();
 	context.subscriptions.push(manager);
 	manager.start();

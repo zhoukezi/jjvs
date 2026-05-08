@@ -11,8 +11,17 @@ crate-type = ["cdylib"]
 napi = { version = "3", features = ["napi6"] }
 napi-derive = "3"
 # jj-lib 在 crates.io 上随 jj CLI 发版，明确标注 experimental、无 lib 层稳定性承诺。
-# M1 第一阶段仅引入依赖验证编译链路，真实业务调用在第二阶段接入。
+# 锁定到具体版本；升级时 native/src/ 与 TS 侧 NativeBinding 均需同步适配。
 jj-lib = "=0.40.0"
+# jj-lib 的公共 API 大量是 async fn，但其内部实现依靠 pollster 阻塞 executor
+# （见 jj-lib/src/merged_tree.rs 等文件的 `use pollster::FutureExt as _`），
+# 不依赖 I/O reactor。AsyncTask::compute 在 libuv 线程池同步运行，统一用
+# pollster 把 jj-lib 的 async 拉平为阻塞调用即可，不引入 tokio runtime。
+pollster = "0.4"
+futures = "0.3"
+# jj-lib 的 store.read_file 返回 tokio::io::AsyncRead；这里只需要 AsyncReadExt
+# 扩展方法驱动 Cursor 读到 Vec<u8>，io-util 就够了，无需 rt / net。
+tokio = { version = "1", features = ["io-util"] }
 
 [build-dependencies]
 # napi-build 没有发布 3.x 稳定版本（3.0.0-beta.0 已被 yank），官方 3.x 项目

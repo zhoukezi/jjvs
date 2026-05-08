@@ -6,17 +6,42 @@ import * as path from "node:path";
 // require 抛错）都直接向上抛出，由 activate 让 VSCode 把"扩展激活失败"展示
 // 出来——不存在任何降级路径。
 // 类型定义在 TS 侧手写，不依赖构建时生成的 native/index.d.ts，避免「必须先
-// 跑 build:native 才能 typecheck」的耦合。
+// 跑 build:native 才能 typecheck」的耦合。新增 #[napi] 导出时：(1) 更新
+// NativeBinding 接口；(2) 在 loadNativeBinding 的导出存在性检查里加一项。
 
 export interface WorkspaceProbe {
 	isJjWorkspace: boolean;
 	workspaceRoot: string;
 	currentCommitId: string | null;
+	parentCommitId: string | null;
+	operationId: string | null;
+}
+
+export type FileChangeKind = "added" | "modified" | "removed";
+
+export interface FileChange {
+	kind: FileChangeKind;
+	/** 相对仓库根、以正斜杠分隔的路径。 */
+	path: string;
+}
+
+export interface ListChangesResult {
+	workspaceRoot: string;
+	currentCommitId: string;
+	parentCommitId: string;
+	operationId: string;
+	changes: FileChange[];
 }
 
 export interface NativeBinding {
 	nativeVersion(): string;
 	probeWorkspace(workspacePath: string): WorkspaceProbe;
+	listChanges(workspacePath: string): Promise<ListChangesResult>;
+	readFileAtCommit(
+		workspacePath: string,
+		commitId: string,
+		repoPath: string,
+	): Promise<Buffer>;
 }
 
 // M1 仅构建 x86_64-unknown-linux-gnu；其他平台一律视为不可用。
@@ -60,7 +85,9 @@ function loadOnce(): NativeBinding {
 	const mod = require(wrapperPath) as Partial<NativeBinding>;
 	if (
 		typeof mod.nativeVersion !== "function" ||
-		typeof mod.probeWorkspace !== "function"
+		typeof mod.probeWorkspace !== "function" ||
+		typeof mod.listChanges !== "function" ||
+		typeof mod.readFileAtCommit !== "function"
 	) {
 		throw new Error(
 			`原生绑定缺少期望的导出函数，TS 与 Rust 侧 API 版本错配。wrapper：${wrapperPath}`,

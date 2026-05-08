@@ -27,6 +27,36 @@
   ],
   "main": "./out/extension.js",
   "contributes": {
+    "commands": [
+      {
+        "command": "jjvs.openFile",
+        "title": "打开文件",
+        "category": "Jujutsu",
+        "icon": "$(go-to-file)"
+      }
+    ],
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "jjvs.openFile",
+          "when": "false"
+        }
+      ],
+      "scm/resourceState/context": [
+        {
+          "command": "jjvs.openFile",
+          "when": "scmProvider == jjvs && scmResourceGroup == jjvs.changes",
+          "group": "inline"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "jjvs.openFile",
+          "when": "jjvs.diffEditorActive",
+          "group": "navigation"
+        }
+      ]
+    },
     "configuration": {
       "title": "jjvs",
       "properties": {}

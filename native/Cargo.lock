@@ -1646,10 +1646,13 @@ dependencies = [
 name = "jjvs-native"
 version = "0.0.1"
 dependencies = [
+ "futures",
  "jj-lib",
  "napi",
  "napi-build",
  "napi-derive",
+ "pollster",
+ "tokio",
 ]
 
 [[package]]
