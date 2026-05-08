@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 
+import { JjFileDecorationProvider } from "./decorations";
 import { registerDiffIntegration } from "./diff";
 import { loadNativeBinding } from "./native";
 import { isJjRepository } from "./repository";
@@ -25,6 +26,17 @@ export function activate(context: vscode.ExtensionContext): void {
 	registerDiffIntegration(context);
 	const manager = new JjRepositoryManager();
 	context.subscriptions.push(manager);
+
+	// FileDecorationProvider 依赖 manager 聚合的装饰事件：provider 在构造时
+	// 直接订阅 manager.onDidChangeDecorations，因此必须在 manager 实例化之后
+	// 构造。start() 触发的首次 refresh 走 AsyncTask，会在本同步帧返回后才完成
+	// 并发事件，顺序上不存在"漏掉首批事件"的风险。
+	const decorationProvider = new JjFileDecorationProvider(manager);
+	context.subscriptions.push(
+		decorationProvider,
+		vscode.window.registerFileDecorationProvider(decorationProvider),
+	);
+
 	manager.start();
 }
 

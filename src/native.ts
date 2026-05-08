@@ -42,6 +42,13 @@ export interface NativeBinding {
 		commitId: string,
 		repoPath: string,
 	): Promise<Buffer>;
+	/**
+	 * 判断仓库内某路径是否被 jj 的 ignore 规则命中。`repoPath` 为相对仓库根、
+	 * 正斜杠分隔的路径（与 FileChange.path 形式一致）。
+	 */
+	isPathIgnored(workspacePath: string, repoPath: string): Promise<boolean>;
+	/** 清空指定 workspace 的 ignore 链缓存。`.gitignore` 变更后调用。 */
+	invalidateIgnoreCache(workspacePath: string): void;
 }
 
 // M1 仅构建 x86_64-unknown-linux-gnu；其他平台一律视为不可用。
@@ -87,7 +94,9 @@ function loadOnce(): NativeBinding {
 		typeof mod.nativeVersion !== "function" ||
 		typeof mod.probeWorkspace !== "function" ||
 		typeof mod.listChanges !== "function" ||
-		typeof mod.readFileAtCommit !== "function"
+		typeof mod.readFileAtCommit !== "function" ||
+		typeof mod.isPathIgnored !== "function" ||
+		typeof mod.invalidateIgnoreCache !== "function"
 	) {
 		throw new Error(
 			`原生绑定缺少期望的导出函数，TS 与 Rust 侧 API 版本错配。wrapper：${wrapperPath}`,
