@@ -6,7 +6,8 @@ import { buildDiffUri, type FileChangeForDiff } from "./diff";
 import {
 	type FileChange,
 	type FileChangeKind,
-	type ListChangesResult,
+	type ListChangesOutcome,
+	type ListChangesStale,
 	loadNativeBinding,
 } from "./native";
 import { isJjRepository } from "./repository";
@@ -83,6 +84,18 @@ export interface JjRepoSummary {
 	readonly commitId: string;
 	readonly description: string;
 	readonly bookmarks: readonly string[];
+	/**
+	 * workspace stale 状态。非 null 时表示 native 侧的 freshness 检查命中了
+	 * `WorkingCopyStale` 或 `SiblingOperation`，此时上一帧 SCM 数据保留不动，
+	 * 状态栏以 stale 徽记 + tooltip 引导用户通过 jj CLI 处理。null 表示一次
+	 * 正常的 Fresh / Updated 刷新已成功提交到磁盘。
+	 *
+	 * 骨架 summary 契约：若首帧刷新就命中 stale（尚无上一帧可保留），`doRefresh`
+	 * 会构造一条仅 `folder` 与 `stale` 有效、其它字段（`changeId` / `commitId`
+	 * / `description` / `bookmarks` 等）全为零值的 summary；下游如 `JjStatusBar`
+	 * 可据此（例如 `changeId.length === 0`）判断要不要渲染上一帧信息。
+	 */
+	readonly stale: ListChangesStale | null;
 }
 
 export class JjSourceControl implements vscode.Disposable {
@@ -278,9 +291,9 @@ export class JjSourceControl implements vscode.Disposable {
 	}
 
 	private async doRefresh(): Promise<void> {
-		let result: ListChangesResult;
+		let outcome: ListChangesOutcome;
 		try {
-			result = await loadNativeBinding().listChanges(this.folder.uri.fsPath);
+			outcome = await loadNativeBinding().listChanges(this.folder.uri.fsPath);
 		} catch (err) {
 			const message = err instanceof Error ? err.message : String(err);
 			// 刷新失败在 VSCode 里没有天然的展示位（SCM 面板本身没有错误状态），
@@ -290,6 +303,42 @@ export class JjSourceControl implements vscode.Disposable {
 			console.error(`[jjvs] 刷新失败：${message}`);
 			return;
 		}
+
+		if (outcome.stale) {
+			// workspace 落在 stale / sibling 状态时，native 端已经有意跳过 snapshot
+			// 与 finish——磁盘零写入。TS 侧此刻的正确选择是保留上一帧 SCM 面板、
+			// changeIndex、装饰、quickDiff 原始资源 URI 都不动，仅通过状态栏把
+			// stale 标记广播出去，引导用户去 CLI 处理。lastSummary 若已存在则就
+			// 地 clone 出新引用挂上 stale；尚未首帧成功时 lastSummary 为空，构造
+			// 一条"骨架" summary 让状态栏能立即显示提示。
+			const stale = outcome.stale;
+			const previous = this.lastSummary;
+			const summary: JjRepoSummary = previous
+				? { ...previous, stale }
+				: {
+						folder: this.folder,
+						changeId: "",
+						changeIdPrefix: "",
+						commitId: "",
+						description: "",
+						bookmarks: [],
+						stale,
+					};
+			this.lastSummary = summary;
+			this.summaryEmitter.fire(summary);
+			return;
+		}
+
+		if (!outcome.data) {
+			// Rust 侧约定 stale 与 data 互斥、且至少一侧非空；真到这里说明 ABI 错
+			// 配。对齐 native loader 的 fail-fast 方针（见 CLAUDE.md 与 src/native.ts
+			// 导出存在性检查），直接抛错让 VSCode 把问题显式暴露出来——静默吞掉会
+			// 掩盖 Rust/TS 接口漂移。
+			throw new Error(
+				"jjvs: listChanges 返回 stale 与 data 均为空，native 绑定与 TS 接口错配",
+			);
+		}
+		const result = outcome.data;
 
 		this.parentCommitId = result.parentCommitId;
 
@@ -329,9 +378,10 @@ export class JjSourceControl implements vscode.Disposable {
 		}
 
 		// 状态栏摘要：用不可变快照广播给订阅者，避免下游持有 bookmarks 引用后
-		// 被下一次刷新就地改写。
+		// 被下一次刷新就地改写。正常刷新成功 → stale 清零。
 		const summary: JjRepoSummary = {
 			folder: this.folder,
+			stale: null,
 			changeId: result.currentChangeId,
 			changeIdPrefix: result.currentChangeIdPrefix,
 			commitId: result.currentCommitId,

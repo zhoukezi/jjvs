@@ -49,10 +49,34 @@ export interface ListChangesResult {
 	changes: FileChange[];
 }
 
+/**
+ * Workspace 处于 stale 状态的标签：
+ *   - `wc_stale`：wc 落后 repo，tree 不一致——用户需跑 `jj workspace update-stale`；
+ *   - `sibling`：wc 与 repo head 形成并行 sibling operations——用户需在 CLI 用
+ *     `jj op log` 处理。
+ *
+ * 字符串常量与 Rust 侧 `STALE_KIND_*` 同步，改动两边都要动。
+ */
+export type ListChangesStaleKind = "wc_stale" | "sibling";
+
+export interface ListChangesStale {
+	kind: ListChangesStaleKind;
+	message: string;
+}
+
+/**
+ * `listChanges` 的顶层返回。`stale` 非空时 `data` 为空，表示本轮刷新没有读取
+ * 变更集（也没有写入 .jj/working_copy/）；`data` 非空时是正常刷新结果。
+ */
+export interface ListChangesOutcome {
+	stale: ListChangesStale | null;
+	data: ListChangesResult | null;
+}
+
 export interface NativeBinding {
 	nativeVersion(): string;
 	probeWorkspace(workspacePath: string): WorkspaceProbe;
-	listChanges(workspacePath: string): Promise<ListChangesResult>;
+	listChanges(workspacePath: string): Promise<ListChangesOutcome>;
 	readFileAtCommit(
 		workspacePath: string,
 		commitId: string,

@@ -1,6 +1,17 @@
 import * as vscode from "vscode";
 
+import type { ListChangesStaleKind } from "./native";
 import type { JjRepoSummary, JjRepositoryManager } from "./scm";
+
+/**
+ * stale 态下状态栏主体的短标签。以 `Record<ListChangesStaleKind, string>` 强
+ * 制穷尽——新增一种 kind 时 TS 类型系统会要求在这里补上对应文案，避免走到
+ * 静默默认分支。与 `src/native.ts` 里 `ListChangesStaleKind` 联动演进。
+ */
+const STALE_KIND_LABEL: Record<ListChangesStaleKind, string> = {
+	wc_stale: "wc stale",
+	sibling: "sibling ops",
+};
 
 // 状态栏在 Left 侧，priority 90：VSCode 内置 Git 约 100，数值小者靠右，因此
 // jjvs 紧邻 Git 右侧出现。colocated 工作区下与 Git 状态栏并列、且 Git 先被
@@ -133,8 +144,24 @@ export class JjStatusBar implements vscode.Disposable {
 		const pinned = config.get<string[]>(CONFIG_PINNED_BOOKMARKS)!;
 		const maxBookmarks = config.get<number>(CONFIG_MAX_BOOKMARKS)!;
 
-		this.item.text = `$(source-control) ${formatStatusBarText(summary, pinned, maxBookmarks)}`;
-		this.item.tooltip = buildTooltip(summary);
+		const body = formatStatusBarText(summary, pinned, maxBookmarks);
+		if (summary.stale) {
+			// stale 态：主体加醒目警告图标 + 背景色，body 保留上一帧已展示过的
+			// bookmarks / change id 前缀以便用户对照；首帧即 stale 时 body 会是空
+			// 的 change id 前缀（scm.ts 构造的骨架 summary），此时只剩警告图标与
+			// 文案，同样够表达"仓库出事了"。tooltip 用专门的 stale 版本替换。
+			this.item.text =
+				`$(warning) jj ${STALE_KIND_LABEL[summary.stale.kind]} ${body}`.trimEnd();
+			this.item.tooltip = buildStaleTooltip(summary);
+			this.item.backgroundColor = new vscode.ThemeColor(
+				"statusBarItem.warningBackground",
+			);
+		} else {
+			this.item.text = `$(source-control) ${body}`;
+			this.item.tooltip = buildTooltip(summary);
+			// 清零 backgroundColor，否则从 stale 恢复到 Fresh 后状态栏会留着橙底。
+			this.item.backgroundColor = undefined;
+		}
 		this.item.show();
 	}
 
@@ -199,6 +226,33 @@ export function formatStatusBarText(
 	}
 	picked.push(summary.changeIdPrefix);
 	return picked.join(" ");
+}
+
+/**
+ * stale 态专用 tooltip：顶部警告块说明原因与用户应跑的 CLI 命令；再附上一
+ * 帧已知的仓库摘要（如果有）。骨架 summary（首帧即 stale）下只展示仓库根路径
+ * 与警告信息，不把空字段渲染成虚假的 `Change：` 行。
+ */
+function buildStaleTooltip(summary: JjRepoSummary): vscode.MarkdownString {
+	const stale = summary.stale!;
+	const md = new vscode.MarkdownString();
+	md.supportThemeIcons = true;
+	md.appendMarkdown(
+		`**Jujutsu** — ${inlineCode(summary.folder.uri.fsPath)}\n\n`,
+	);
+	md.appendMarkdown(`$(warning) **workspace ${stale.kind}**\n\n`);
+	md.appendMarkdown(`${stale.message}\n\n`);
+	// 若有上一帧数据（非骨架 summary），附展示一下便于用户判断这是哪个 change。
+	if (summary.changeId.length > 0) {
+		md.appendMarkdown(`上次刷新：\n\n`);
+		md.appendMarkdown(`- Change：${inlineCode(summary.changeId)}\n`);
+		md.appendMarkdown(`- Commit：${inlineCode(summary.commitId)}\n`);
+		if (summary.bookmarks.length > 0) {
+			const tagged = summary.bookmarks.map(inlineCode).join("、");
+			md.appendMarkdown(`- Bookmark：${tagged}\n`);
+		}
+	}
+	return md;
 }
 
 function buildTooltip(summary: JjRepoSummary): vscode.MarkdownString {

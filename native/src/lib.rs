@@ -30,7 +30,10 @@ pub fn native_version() -> String {
 }
 
 pub use blob::{read_file_at_commit, ReadFileAtCommitTask};
-pub use changes::{list_changes, FileChange, ListChangesResult, ListChangesTask};
+pub use changes::{
+    list_changes, FileChange, ListChangesOutcome, ListChangesResult, ListChangesStale,
+    ListChangesTask,
+};
 pub use colocation::is_colocated_workspace;
 pub use ignore::{invalidate_ignore_cache, is_path_ignored, IsPathIgnoredTask};
 pub use probe::{probe_workspace, WorkspaceProbe};
