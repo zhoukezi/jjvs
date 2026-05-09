@@ -18,6 +18,7 @@ mod blob;
 mod changes;
 mod colocation;
 mod ignore;
+mod logger;
 mod probe;
 mod workspace_loader;
 
@@ -36,4 +37,5 @@ pub use changes::{
 };
 pub use colocation::is_colocated_workspace;
 pub use ignore::{invalidate_ignore_cache, is_path_ignored, IsPathIgnoredTask};
+pub use logger::{set_native_log_level, set_native_logger, NativeLogPayload};
 pub use probe::{probe_workspace, WorkspaceProbe};

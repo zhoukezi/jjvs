@@ -3,6 +3,7 @@ import * as path from "node:path";
 import * as vscode from "vscode";
 
 import { buildDiffUri, type FileChangeForDiff } from "./diff";
+import * as logger from "./logger";
 import {
 	type FileChange,
 	type FileChangeKind,
@@ -190,6 +191,12 @@ export class JjSourceControl implements vscode.Disposable {
 			if (this.isGitignorePath(uri.fsPath)) {
 				loadNativeBinding().invalidateIgnoreCache(this.folder.uri.fsPath);
 				this.decorationEmitter.fire(undefined);
+				logger.debug("scm", "gitignore 变更，失效 ignore 缓存", {
+					path: uri.fsPath,
+				});
+			} else if (uri.fsPath.includes(`${path.sep}op_heads${path.sep}`)) {
+				// shouldReactToChange 已确保只放行 op_heads 事件进入 .jj/ 分支。
+				logger.trace("scm", "op_heads 事件", { path: uri.fsPath });
 			}
 			this.scheduleRefresh();
 		};
@@ -291,16 +298,20 @@ export class JjSourceControl implements vscode.Disposable {
 	}
 
 	private async doRefresh(): Promise<void> {
+		const refreshStart = Date.now();
+		logger.debug("scm", "refresh 开始", { folder: this.folder.uri.fsPath });
 		let outcome: ListChangesOutcome;
 		try {
 			outcome = await loadNativeBinding().listChanges(this.folder.uri.fsPath);
 		} catch (err) {
 			const message = err instanceof Error ? err.message : String(err);
 			// 刷新失败在 VSCode 里没有天然的展示位（SCM 面板本身没有错误状态），
-			// 弹窗 + Output 风格都过重；先走 console，后续里程碑有 Output 通道时
-			// 集中到通道。不把错误吞了——抛错会中断 promise 链，这里记录后保持
-			// 现有 resourceStates 不动，让用户感知到 diff 没变但不会卡死面板。
-			console.error(`[jjvs] 刷新失败：${message}`);
+			// 弹窗不合适；记录到 logger 后保持现有 resourceStates 不动，让用户感
+			// 知到 diff 没变但不会卡死面板。
+			logger.error("scm", "刷新失败", {
+				folder: this.folder.uri.fsPath,
+				error: message,
+			});
 			return;
 		}
 
@@ -326,6 +337,11 @@ export class JjSourceControl implements vscode.Disposable {
 					};
 			this.lastSummary = summary;
 			this.summaryEmitter.fire(summary);
+			logger.info("scm", "refresh stale", {
+				folder: this.folder.uri.fsPath,
+				kind: stale.kind,
+				message: stale.message,
+			});
 			return;
 		}
 
@@ -334,6 +350,7 @@ export class JjSourceControl implements vscode.Disposable {
 			// 配。对齐 native loader 的 fail-fast 方针（见 CLAUDE.md 与 src/native.ts
 			// 导出存在性检查），直接抛错让 VSCode 把问题显式暴露出来——静默吞掉会
 			// 掩盖 Rust/TS 接口漂移。
+			logger.error("scm", "listChanges 返回 stale 与 data 均为空，ABI 错配");
 			throw new Error(
 				"jjvs: listChanges 返回 stale 与 data 均为空，native 绑定与 TS 接口错配",
 			);
@@ -390,6 +407,12 @@ export class JjSourceControl implements vscode.Disposable {
 		};
 		this.lastSummary = summary;
 		this.summaryEmitter.fire(summary);
+		logger.debug("scm", "refresh 成功", {
+			folder: this.folder.uri.fsPath,
+			changes: states.length,
+			commitId: result.currentCommitId,
+			elapsedMs: Date.now() - refreshStart,
+		});
 	}
 
 	/**
@@ -487,6 +510,14 @@ export class JjRepositoryManager implements vscode.Disposable {
 		return Array.from(this.repositories.values(), (repo) => repo.folder);
 	}
 
+	/**
+	 * 查询指定 folder 对应仓库的最近一次 summary。`copyDiagnostics` 使用；
+	 * 未识别的 folder 或尚未完成首帧刷新时返回 undefined。
+	 */
+	getSummary(folder: vscode.WorkspaceFolder): JjRepoSummary | undefined {
+		return this.repositories.get(folder.uri.toString())?.summary;
+	}
+
 	start(): void {
 		this.syncAll();
 		this.disposables.push(
@@ -537,6 +568,7 @@ export class JjRepositoryManager implements vscode.Disposable {
 						this.summaryEmitter.fire(summary),
 					),
 				]);
+				logger.info("scm", "发现 jj 仓库", { folder: folder.uri.fsPath });
 			}
 		}
 
@@ -559,6 +591,7 @@ export class JjRepositoryManager implements vscode.Disposable {
 					// 订阅者拿不到 folder 信息去定位缓存。
 					this.removeRepoEmitter.fire(repo.folder);
 					repo.dispose();
+					logger.info("scm", "移除仓库", { folder: repo.folder.uri.fsPath });
 				}
 			}
 		}

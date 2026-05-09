@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 
+import * as logger from "./logger";
 import type { ListChangesStaleKind } from "./native";
 import type { JjRepoSummary, JjRepositoryManager } from "./scm";
 
@@ -131,6 +132,14 @@ export class JjStatusBar implements vscode.Disposable {
 		const key = summary.folder.uri.toString();
 		this.displayTick += 1;
 		this.displayOrder.set(key, this.displayTick);
+
+		logger.trace("statusbar", "render", {
+			folder: summary.folder.uri.fsPath,
+			stale: summary.stale?.kind ?? null,
+		});
+		if (summary.stale) {
+			logger.debug("statusbar", "stale fallback", { kind: summary.stale.kind });
+		}
 
 		const config = vscode.workspace.getConfiguration(
 			CONFIG_SECTION,

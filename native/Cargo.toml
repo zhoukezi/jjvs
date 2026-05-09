@@ -22,6 +22,9 @@ futures = "0.3"
 # jj-lib 的 store.read_file 返回 tokio::io::AsyncRead；这里只需要 AsyncReadExt
 # 扩展方法驱动 Cursor 读到 Vec<u8>，io-util 就够了，无需 rt / net。
 tokio = { version = "1", features = ["io-util"] }
+# 统一日志门面：native 侧所有打点（含 panic hook）走 log crate，桥接层把
+# log::Record 转成 ThreadsafeFunction<NativeLogPayload> 回到 TS 侧 logger。
+log = "0.4"
 
 [build-dependencies]
 # napi-build 没有发布 3.x 稳定版本（3.0.0-beta.0 已被 yank），官方 3.x 项目

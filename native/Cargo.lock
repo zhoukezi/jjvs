@@ -1648,6 +1648,7 @@ version = "0.0.1"
 dependencies = [
  "futures",
  "jj-lib",
+ "log",
  "napi",
  "napi-build",
  "napi-derive",

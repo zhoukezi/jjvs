@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 
+import * as logger from "./logger";
 import type { FileChangeKind } from "./native";
 import type { JjRepositoryManager, JjSourceControl } from "./scm";
 
@@ -61,6 +62,9 @@ export class JjFileDecorationProvider
 			this.emitter,
 			manager.onDidChangeDecorations((change) => {
 				// change === undefined 直接透传（全量刷新），Uri[] 也直接透传。
+				if (change === undefined) {
+					logger.trace("decoration", "全量装饰刷新");
+				}
 				this.emitter.fire(change);
 			}),
 		);
@@ -111,7 +115,10 @@ async function safeIsIgnored(
 		return await repo.isPathIgnored(uri);
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
-		console.error(`[jjvs] isPathIgnored 失败 ${uri.fsPath}: ${message}`);
+		logger.warn("decoration", "isPathIgnored 失败", {
+			path: uri.fsPath,
+			error: message,
+		});
 		return false;
 	}
 }

@@ -33,6 +33,18 @@
         "title": "打开文件",
         "category": "Jujutsu",
         "icon": "$(go-to-file)"
+      },
+      {
+        "command": "jjvs.showLog",
+        "title": "显示日志",
+        "category": "Jujutsu",
+        "icon": "$(output)"
+      },
+      {
+        "command": "jjvs.copyDiagnostics",
+        "title": "复制诊断信息",
+        "category": "Jujutsu",
+        "icon": "$(clippy)"
       }
     ],
     "menus": {
@@ -60,6 +72,25 @@
     "configuration": {
       "title": "jjvs",
       "properties": {
+        "jjvs.log.level": {
+          "type": "string",
+          "enum": [
+            "error",
+            "warn",
+            "info",
+            "debug",
+            "trace"
+          ],
+          "enumDescriptions": [
+            "仅输出错误。",
+            "输出警告及以上。",
+            "输出常规信息及以上（默认）。",
+            "输出调试信息及以上，含 refresh / snapshot 关键事件。",
+            "输出所有日志，包括高频 trace 点位。"
+          ],
+          "default": "info",
+          "description": "jjvs 输出通道的日志级别。"
+        },
         "jjvs.quickDiff.mode": {
           "type": "string",
           "enum": [

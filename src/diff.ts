@@ -2,6 +2,7 @@ import * as path from "node:path";
 
 import * as vscode from "vscode";
 
+import * as logger from "./logger";
 import { type FileChangeKind, loadNativeBinding } from "./native";
 
 // 自定义 URI scheme，用于把 "某 commit 里的某文件内容" 暴露给 VSCode diff
@@ -76,6 +77,7 @@ export interface FileChangeForDiff {
 async function openDiff(change: FileChangeForDiff): Promise<void> {
 	const { workspaceRoot, parentCommitId, kind, fsPath, repoPath } = change;
 	const basename = path.basename(fsPath);
+	logger.debug("fsprovider", "openDiff", { kind, repoPath });
 
 	let leftUri: vscode.Uri;
 	let rightUri: vscode.Uri;
@@ -188,6 +190,7 @@ function registerDiffEditorActiveTracker(): vscode.Disposable {
 			return;
 		}
 		lastValue = isJjvsDiff;
+		logger.trace("fsprovider", "diff active 变化", { active: isJjvsDiff });
 		void vscode.commands.executeCommand(
 			"setContext",
 			DIFF_ACTIVE_CONTEXT,

@@ -94,6 +94,21 @@ export interface NativeBinding {
 	 * 根）。判定逻辑对齐 `jj git colocation status`。
 	 */
 	isColocatedWorkspace(workspacePath: string): boolean;
+	/**
+	 * 安装 native 侧 log crate → TS logger 的回调。只能调用一次；`src/logger.ts`
+	 * 的 `attachNative()` 负责在 `loadNativeBinding()` 之后调一次。
+	 *
+	 * payload.level 数值映射与 TS `LogLevel` 对齐（0=error..4=trace）；payload.tag
+	 * 来自 Rust `log::Record::target()`（panic hook 使用 "panic"）。
+	 */
+	setNativeLogger(
+		callback: (payload: { level: number; tag: string; msg: string }) => void,
+	): void;
+	/**
+	 * 同步 Rust 侧 `log::set_max_level`。TS 侧作为级别事实来源，`logger.setLevel`
+	 * 调用此函数把 max_level 推给 native，避免 trace 级别每条都跨 boundary。
+	 */
+	setNativeLogLevel(level: number): void;
 }
 
 // M1 仅构建 x86_64-unknown-linux-gnu；其他平台一律视为不可用。
@@ -142,7 +157,9 @@ function loadOnce(): NativeBinding {
 		typeof mod.readFileAtCommit !== "function" ||
 		typeof mod.isPathIgnored !== "function" ||
 		typeof mod.invalidateIgnoreCache !== "function" ||
-		typeof mod.isColocatedWorkspace !== "function"
+		typeof mod.isColocatedWorkspace !== "function" ||
+		typeof mod.setNativeLogger !== "function" ||
+		typeof mod.setNativeLogLevel !== "function"
 	) {
 		throw new Error(
 			`原生绑定缺少期望的导出函数，TS 与 Rust 侧 API 版本错配。wrapper：${wrapperPath}`,
