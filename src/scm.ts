@@ -72,6 +72,19 @@ type QuickDiffMode = "auto" | "enabled" | "disabled";
 
 const QUICK_DIFF_CONFIG_KEY = "jjvs.quickDiff.mode";
 
+/**
+ * 单个仓库的状态摘要。`JjStatusBar` 订阅此结构渲染状态栏主体与 tooltip。
+ * 字段来源：`listChanges` 的扩展返回值，在 `doRefresh` 成功末尾一次性广播。
+ */
+export interface JjRepoSummary {
+	readonly folder: vscode.WorkspaceFolder;
+	readonly changeId: string;
+	readonly changeIdPrefix: string;
+	readonly commitId: string;
+	readonly description: string;
+	readonly bookmarks: readonly string[];
+}
+
 export class JjSourceControl implements vscode.Disposable {
 	private readonly sourceControl: vscode.SourceControl;
 	private readonly changesGroup: vscode.SourceControlResourceGroup;
@@ -106,6 +119,15 @@ export class JjSourceControl implements vscode.Disposable {
 	/** FileDecorationProvider 订阅此事件；undefined 表示全量刷新。 */
 	readonly onDidChangeDecorations = this.decorationEmitter.event;
 
+	private readonly summaryEmitter = new vscode.EventEmitter<JjRepoSummary>();
+	/** 每次成功刷新后广播最新的仓库摘要；`JjStatusBar` 订阅此事件。 */
+	readonly onDidChangeSummary = this.summaryEmitter.event;
+	private lastSummary: JjRepoSummary | undefined;
+	/** 最近一次成功刷新得到的仓库摘要。新 subscriber 挂载时可用于首帧渲染。 */
+	get summary(): JjRepoSummary | undefined {
+		return this.lastSummary;
+	}
+
 	constructor(public readonly folder: vscode.WorkspaceFolder) {
 		this.sourceControl = vscode.scm.createSourceControl(
 			"jjvs",
@@ -129,10 +151,21 @@ export class JjSourceControl implements vscode.Disposable {
 			this.changesGroup,
 			this.sourceControl,
 			this.decorationEmitter,
+			this.summaryEmitter,
 		);
 
 		const watcher = vscode.workspace.createFileSystemWatcher(
 			new vscode.RelativePattern(folder, "**"),
+		);
+		// 额外盯一个 `.jj/**` watcher：VSCode 在某些场景下对 dot-prefixed 子目录
+		// 的 recursive watch 行为不稳（由 files.watcherExclude / parcel watcher
+		// 内部策略决定），仅靠上面那个 `**` watcher 曾经出现过 `.jj/repo/op_heads/`
+		// 下的 op 移动事件漏报的情况——表现为用户执行 `jj bookmark create` 等
+		// 不触碰 working-copy 文件的命令后 SCM 面板 / 状态栏不刷新。显式再挂一
+		// 个 `.jj/**` 的 watcher 兜底；重复触发由 scheduleRefresh 的 300ms 防抖
+		// 合并成单次 listChanges，不会放大开销。
+		const jjWatcher = vscode.workspace.createFileSystemWatcher(
+			new vscode.RelativePattern(folder, ".jj/**"),
 		);
 		const onEvent = (uri: vscode.Uri) => {
 			if (!this.shouldReactToChange(uri.fsPath)) {
@@ -152,6 +185,10 @@ export class JjSourceControl implements vscode.Disposable {
 			watcher.onDidChange(onEvent),
 			watcher.onDidCreate(onEvent),
 			watcher.onDidDelete(onEvent),
+			jjWatcher,
+			jjWatcher.onDidChange(onEvent),
+			jjWatcher.onDidCreate(onEvent),
+			jjWatcher.onDidDelete(onEvent),
 		);
 
 		void this.refresh();
@@ -290,6 +327,19 @@ export class JjSourceControl implements vscode.Disposable {
 				Array.from(affected, (fsPath) => vscode.Uri.file(fsPath)),
 			);
 		}
+
+		// 状态栏摘要：用不可变快照广播给订阅者，避免下游持有 bookmarks 引用后
+		// 被下一次刷新就地改写。
+		const summary: JjRepoSummary = {
+			folder: this.folder,
+			changeId: result.currentChangeId,
+			changeIdPrefix: result.currentChangeIdPrefix,
+			commitId: result.currentCommitId,
+			description: result.currentDescription,
+			bookmarks: [...result.currentBookmarks],
+		};
+		this.lastSummary = summary;
+		this.summaryEmitter.fire(summary);
 	}
 
 	/**
@@ -358,20 +408,41 @@ export class JjSourceControl implements vscode.Disposable {
 export class JjRepositoryManager implements vscode.Disposable {
 	private readonly repositories = new Map<string, JjSourceControl>();
 	private readonly disposables: vscode.Disposable[] = [];
-	// 仓库级装饰事件的订阅 disposable：每个 JjSourceControl 进入 manager 时
-	// 订阅一次，仓库从 workspace 移除时单独 dispose 订阅；不依赖 repo.dispose
-	// 去级联，因为订阅的接收方是 manager 自身的 emitter。
-	private readonly repoDecorationSubs = new Map<string, vscode.Disposable>();
+	// 仓库级事件的订阅 disposable：每个 JjSourceControl 进入 manager 时集中
+	// 订阅其所有对外事件，仓库从 workspace 移除时按 key 一次性 dispose；不
+	// 依赖 repo.dispose 级联，因为订阅的接收方是 manager 自身的 emitter。
+	// 用单个 Map<string, Disposable[]> 容纳所有订阅，未来新增事件种类只需
+	// 改一处。
+	private readonly repoSubs = new Map<string, vscode.Disposable[]>();
 
 	private readonly decorationEmitter =
 		new vscode.EventEmitter<DecorationChange>();
 	/** 聚合所有仓库的装饰事件；FileDecorationProvider 订阅此事件。 */
 	readonly onDidChangeDecorations = this.decorationEmitter.event;
 
+	private readonly summaryEmitter = new vscode.EventEmitter<JjRepoSummary>();
+	/** 聚合所有仓库的摘要事件；`JjStatusBar` 订阅此事件。 */
+	readonly onDidChangeSummary = this.summaryEmitter.event;
+
+	private readonly removeRepoEmitter =
+		new vscode.EventEmitter<vscode.WorkspaceFolder>();
+	/**
+	 * 仓库从 workspace 移除（folder 被删除或 `.jj` 消失时 syncAll 检出）时广播
+	 * 对应 folder。订阅者据此清理按 folder 键的缓存（如状态栏 summary 快照）。
+	 */
+	readonly onDidRemoveRepo = this.removeRepoEmitter.event;
+
+	/** 当前被 manager 管理的所有仓库 folder 列表，顺序为最初识别顺序。 */
+	get folders(): readonly vscode.WorkspaceFolder[] {
+		return Array.from(this.repositories.values(), (repo) => repo.folder);
+	}
+
 	start(): void {
 		this.syncAll();
 		this.disposables.push(
 			this.decorationEmitter,
+			this.summaryEmitter,
+			this.removeRepoEmitter,
 			vscode.workspace.onDidChangeWorkspaceFolders(() => this.syncAll()),
 			vscode.workspace.onDidChangeConfiguration((event) => {
 				for (const repo of this.repositories.values()) {
@@ -408,19 +479,37 @@ export class JjRepositoryManager implements vscode.Disposable {
 			if (!this.repositories.has(key)) {
 				const repo = new JjSourceControl(folder);
 				this.repositories.set(key, repo);
-				const sub = repo.onDidChangeDecorations((change) =>
-					this.decorationEmitter.fire(change),
-				);
-				this.repoDecorationSubs.set(key, sub);
+				this.repoSubs.set(key, [
+					repo.onDidChangeDecorations((change) =>
+						this.decorationEmitter.fire(change),
+					),
+					repo.onDidChangeSummary((summary) =>
+						this.summaryEmitter.fire(summary),
+					),
+				]);
 			}
 		}
 
 		for (const key of Array.from(this.repositories.keys())) {
 			if (!desired.has(key)) {
-				this.repoDecorationSubs.get(key)?.dispose();
-				this.repoDecorationSubs.delete(key);
-				this.repositories.get(key)?.dispose();
+				const subs = this.repoSubs.get(key);
+				if (!subs) {
+					throw new Error(
+						`repoSubs 与 repositories 不一致：缺少 ${key} 的订阅记录`,
+					);
+				}
+				for (const sub of subs) {
+					sub.dispose();
+				}
+				this.repoSubs.delete(key);
+				const repo = this.repositories.get(key);
 				this.repositories.delete(key);
+				if (repo) {
+					// 先通知订阅者（状态栏）清缓存，再 dispose 仓库自身——反过来会让
+					// 订阅者拿不到 folder 信息去定位缓存。
+					this.removeRepoEmitter.fire(repo.folder);
+					repo.dispose();
+				}
 			}
 		}
 	}
@@ -430,10 +519,12 @@ export class JjRepositoryManager implements vscode.Disposable {
 			d.dispose();
 		}
 		this.disposables.length = 0;
-		for (const sub of this.repoDecorationSubs.values()) {
-			sub.dispose();
+		for (const subs of this.repoSubs.values()) {
+			for (const sub of subs) {
+				sub.dispose();
+			}
 		}
-		this.repoDecorationSubs.clear();
+		this.repoSubs.clear();
 		for (const repo of this.repositories.values()) {
 			repo.dispose();
 		}

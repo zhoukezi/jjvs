@@ -74,6 +74,25 @@
           ],
           "default": "auto",
           "description": "编辑器侧栏（gutter）行级 diff 的启用策略。对比基准为当前 change 的第一个父 commit。"
+        },
+        "jjvs.statusBar.pinnedBookmarks": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "main",
+            "master"
+          ],
+          "description": "状态栏优先展示的 bookmark 名字列表。当前 change 上出现的名字按此列表顺序优先占据展示位，剩余展示位按 jj-lib 返回顺序补入其他 bookmark。",
+          "scope": "resource"
+        },
+        "jjvs.statusBar.maxBookmarks": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 2,
+          "description": "状态栏主体最多展示多少个 bookmark 名。多出的部分折叠为 `+K` 附在末尾。设为 0 表示不在主体展示任何 bookmark，仅显示 `+K` 与 change_id 前缀。",
+          "scope": "resource"
         }
       }
     }

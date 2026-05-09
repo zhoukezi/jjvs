@@ -5,6 +5,7 @@ import { registerDiffIntegration } from "./diff";
 import { loadNativeBinding } from "./native";
 import { isJjRepository } from "./repository";
 import { JjRepositoryManager } from "./scm";
+import { JjStatusBar } from "./statusBar";
 
 export function activate(context: vscode.ExtensionContext): void {
 	// 提前触发原生绑定加载：任何失败立即抛出，让扩展激活显式失败，
@@ -36,6 +37,12 @@ export function activate(context: vscode.ExtensionContext): void {
 		decorationProvider,
 		vscode.window.registerFileDecorationProvider(decorationProvider),
 	);
+
+	// 状态栏在 manager.start() 之前构造，这样 manager 触发的首次 refresh 发出
+	// summary 事件时，statusBar 已经订阅上；与 FileDecorationProvider 的先后
+	// 处理逻辑一致。
+	const statusBar = new JjStatusBar(manager);
+	context.subscriptions.push(statusBar);
 
 	manager.start();
 }

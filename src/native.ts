@@ -28,6 +28,22 @@ export interface FileChange {
 export interface ListChangesResult {
 	workspaceRoot: string;
 	currentCommitId: string;
+	/**
+	 * 当前 working-copy commit 的 change_id，reverse_hex 形式（字符集 k-z，
+	 * 对齐 jj CLI 展示约定）。与 currentCommitId 的标准 hex（0-9a-f）区分开。
+	 * 状态栏 tooltip 用。
+	 */
+	currentChangeId: string;
+	/**
+	 * 当前 change_id 的最短唯一前缀（同为 reverse_hex 形式）。对齐 jj CLI 默认
+	 * 模板 `shortest(change_id, 8)`：不足 8 位时填充至 8 位，超过 8 位时按实际
+	 * 长度展示。
+	 */
+	currentChangeIdPrefix: string;
+	/** 当前 commit 的 description 原文（可能为空串、可能含换行）。 */
+	currentDescription: string;
+	/** 当前 commit 上贴着的所有 local bookmark 名（顺序来自 jj-lib）。 */
+	currentBookmarks: string[];
 	parentCommitId: string;
 	operationId: string;
 	changes: FileChange[];

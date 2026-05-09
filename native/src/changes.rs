@@ -11,18 +11,25 @@
 // 支持。
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use futures::StreamExt as _;
 use jj_lib::gitignore::GitIgnoreFile;
+use jj_lib::id_prefix::IdPrefixContext;
 use jj_lib::matchers::{EverythingMatcher, NothingMatcher};
 use jj_lib::object_id::ObjectId;
 use jj_lib::repo::Repo;
+use jj_lib::revset::RevsetExtensions;
 use jj_lib::working_copy::SnapshotOptions;
 use napi::bindgen_prelude::{AsyncTask, Env, Error, Result, Task};
 use napi_derive::napi;
 use pollster::FutureExt as _;
 
 use crate::workspace_loader::load_workspace_and_repo;
+
+/// change_id 前缀的最小展示宽度。jj CLI 默认模板 `shortest(change_id, 8)`
+/// 在最短唯一前缀短于 8 位时会填充至 8 位；VSCode 状态栏展示对齐此行为。
+const MIN_CHANGE_ID_PREFIX_LEN: usize = 8;
 
 /// 单个文件变更。`path` 使用 jj 的内部路径形式（相对仓库根的正斜杠字符串），
 /// TS 侧负责拼 workspace_root 还原成绝对路径。
@@ -41,6 +48,21 @@ pub struct ListChangesResult {
     pub workspace_root: String,
     /// 当前 working-copy commit id（十六进制）。
     pub current_commit_id: String,
+    /// 当前 working-copy commit 的 change_id，用 reverse_hex 形式（字符集
+    /// k-z，对齐 jj CLI 展示约定，以避免与 commit_id 的标准 hex 混淆）。
+    /// 状态栏 tooltip 要展示完整 change_id；前缀由 `current_change_id_prefix`
+    /// 单独回传。
+    pub current_change_id: String,
+    /// 当前 change_id 的最短唯一前缀（对齐 jj CLI 默认模板
+    /// `shortest(change_id, 8)`，同为 reverse_hex 形式）。通过 `IdPrefixContext`
+    /// 计算最短不冲突长度，不足 8 位时填充至 8 位，超过 8 位时按实际长度返回。
+    pub current_change_id_prefix: String,
+    /// 当前 commit 的 description（原文，保留换行）。空 description 返回空串，
+    /// TS 侧据此决定 tooltip 是否渲染该行。
+    pub current_description: String,
+    /// 当前 working-copy commit 上贴着的所有 local bookmark 名。顺序来自
+    /// jj-lib 的 `View::local_bookmarks_for_commit`，TS 侧根据 pin 列表再排序。
+    pub current_bookmarks: Vec<String>,
     /// 第一个父 commit id（十六进制）。merge commit 只取第一个父；
     /// `parent_tree` 也是从这个父 commit 读出，保证 diff 左侧与 TS 侧收到
     /// 的 parent_commit_id 指向同一棵 tree。
@@ -79,6 +101,40 @@ impl Task for ListChangesTask {
             .get_commit_async(&current_commit_id)
             .block_on()
             .map_err(|err| Error::from_reason(format!("读取当前 commit 失败: {err}")))?;
+
+        // change_id 用 reverse_hex（字符集 k-z）——对齐 jj CLI 的展示约定：
+        // commit_id 用标准 hex（0-9a-f），change_id 用 reverse hex 以避免与
+        // commit_id 混淆。jj-lib 的 IdPrefixContext::shortest_change_prefix_len
+        // 内部基于 ChangeId::to_string() 的 reverse_hex 形式计算字符长度，所以
+        // 返回的 len 可直接作为 reverse_hex 字符串的截取位置。
+        //
+        // 状态栏前缀对齐 jj CLI 默认模板 `shortest(change_id, 8)`：最短唯一
+        // 前缀不足 8 字符时补齐至 8。
+        let current_change_id = current_commit.change_id().reverse_hex();
+        let prefix_ctx = IdPrefixContext::new(Arc::new(RevsetExtensions::default()));
+        let prefix_index = prefix_ctx
+            .populate(repo.as_ref())
+            .map_err(|err| Error::from_reason(format!("构建 IdPrefixIndex 失败: {err}")))?;
+        let prefix_len_min = prefix_index
+            .shortest_change_prefix_len(repo.as_ref(), current_commit.change_id())
+            .map_err(|err| Error::from_reason(format!("计算 change id 前缀失败: {err}")))?;
+        let effective_len = prefix_len_min.max(MIN_CHANGE_ID_PREFIX_LEN);
+        // reverse_hex 字符集 k-z 是纯 ASCII，按字符切片等价于按字节切片；
+        // shortest_change_prefix_len 返回长度不超过 change_id 的 reverse_hex
+        // 总长，故 effective_len ≤ current_change_id.len() 成立。
+        let current_change_id_prefix = current_change_id[..effective_len].to_string();
+
+        // 当前 commit 贴着的 local bookmark 名字。顺序来自 jj-lib 的迭代器，
+        // TS 侧按配置 pin 列表再排序。
+        let current_bookmarks: Vec<String> = repo
+            .view()
+            .local_bookmarks_for_commit(&current_commit_id)
+            .map(|(name, _)| name.as_str().to_owned())
+            .collect();
+
+        // description 以单一字符串返回，可能为空、可能含嵌入换行。状态栏
+        // tooltip 自行决定是否/如何截断渲染。
+        let current_description = current_commit.description().to_owned();
 
         let parent_commit_id = current_commit
             .parent_ids()
@@ -141,6 +197,10 @@ impl Task for ListChangesTask {
         Ok(ListChangesResult {
             workspace_root,
             current_commit_id: current_commit_id.hex(),
+            current_change_id,
+            current_change_id_prefix,
+            current_description,
+            current_bookmarks,
             parent_commit_id: parent_commit_id.hex(),
             operation_id: op_id.hex(),
             changes,
