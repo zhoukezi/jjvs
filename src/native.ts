@@ -73,15 +73,33 @@ export interface ListChangesOutcome {
 	data: ListChangesResult | null;
 }
 
+/**
+ * `readFileAtCommit` 的返回形态。`bytes === null` 表示原始文件大小超过传入的
+ * `maxFileSize`，native 直接短路未加载字节（NAPI 边界 OOM 保底）；此时仅
+ * `size` 字段有效，供 TS 侧拼接占位文案。正常路径下 `bytes.byteLength === size`。
+ */
+export interface FileBlob {
+	bytes: Buffer | null;
+	size: number;
+}
+
 export interface NativeBinding {
 	nativeVersion(): string;
 	probeWorkspace(workspacePath: string): WorkspaceProbe;
 	listChanges(workspacePath: string): Promise<ListChangesOutcome>;
+	/**
+	 * 读取指定 commit 下某仓库内路径的 blob 字节，受 `maxFileSize` 约束：
+	 *   - 原始文件大小 <= maxFileSize：返回 `{ bytes, size }`，`bytes` 为完整字节；
+	 *   - 原始文件大小 > maxFileSize：返回 `{ bytes: null, size }`，native 侧不会
+	 *     把字节投到 NAPI Buffer，Rust 堆峰值也受 maxFileSize 约束。
+	 * 传 `maxFileSize: 0` 即"只要文件非空就短路"，可用于只想拿精确 size 的探测。
+	 */
 	readFileAtCommit(
 		workspacePath: string,
 		commitId: string,
 		repoPath: string,
-	): Promise<Buffer>;
+		maxFileSize: number,
+	): Promise<FileBlob>;
 	/**
 	 * 判断仓库内某路径是否被 jj 的 ignore 规则命中。`repoPath` 为相对仓库根、
 	 * 正斜杠分隔的路径（与 FileChange.path 形式一致）。

@@ -43,24 +43,97 @@ function parseDiffUri(uri: vscode.Uri): JjvsUriParams {
 	return params as JjvsUriParams;
 }
 
-class JjvsContentProvider implements vscode.TextDocumentContentProvider {
-	async provideTextDocumentContent(uri: vscode.Uri): Promise<string> {
+// 默认与 package.json 的 "jjvs.diff.maxFileSize" default 字段对齐（50 MiB）。
+// 这里的常量仅作为 getConfiguration 读不到值时的兜底，正常路径由配置驱动。
+const DEFAULT_MAX_FILE_SIZE = 52_428_800;
+
+function readMaxFileSize(): number {
+	const raw = vscode.workspace
+		.getConfiguration("jjvs.diff")
+		.get<number>("maxFileSize", DEFAULT_MAX_FILE_SIZE);
+	// 用户手工编辑 settings.json 可能写入 NaN / 负值；package.json 的 minimum
+	// 只拦 UI 输入，这里再做一次防呆：非有限或小于 0 时回落到默认。
+	if (!Number.isFinite(raw) || raw < 0) {
+		return DEFAULT_MAX_FILE_SIZE;
+	}
+	return raw;
+}
+
+// 选 FileSystemProvider 而非 TextDocumentContentProvider：后者只能返回 string，
+// 被迫把字节解成 UTF-8，二进制文件会被替换字符污染；前者吐 Uint8Array，
+// VSCode 内置 diff editor 自行判定二进制并渲染占位视图。对齐 VSCode 内置 Git
+// 扩展的 extensions/git/src/fileSystemProvider.ts。
+class JjvsFileSystemProvider implements vscode.FileSystemProvider {
+	private readonly _onDidChangeFile = new vscode.EventEmitter<
+		vscode.FileChangeEvent[]
+	>();
+	readonly onDidChangeFile = this._onDidChangeFile.event;
+
+	watch(): vscode.Disposable {
+		return new vscode.Disposable(() => {});
+	}
+
+	async stat(uri: vscode.Uri): Promise<vscode.FileStat> {
 		const { workspace, commit, repoPath } = parseDiffUri(uri);
-		// 空 commit 约定为"空内容一侧"：added 文件的左侧、deleted 文件的右侧。
-		// 不调用 native，避免为一个注定空的文档走 AsyncTask。
 		if (commit === "") {
-			return "";
+			return { type: vscode.FileType.File, ctime: 0, mtime: 0, size: 0 };
 		}
-		const bytes = await loadNativeBinding().readFileAtCommit(
+		// stat 只要精确 size：传 maxFileSize=0 让 native 对任何非空文件都短路，
+		// 不把字节投进 NAPI Buffer。jj-lib 没有独立的 size API，Rust 侧仍需扫完
+		// 整个 blob，但 JS heap 不会因此分配——这是对 VSCode 频繁 stat 的省内存
+		// 路径，不与 readFile 竞争缓存语义。
+		const { size } = await loadNativeBinding().readFileAtCommit(
 			workspace,
 			commit,
 			repoPath,
+			0,
 		);
-		// 二进制文件被 VSCode 内置 diff 识别为 binary 的路径不在这里——
-		// provideTextDocumentContent 只能返回 string。按 UTF-8 解码；对非 UTF-8
-		// 的二进制内容会出现替换字符，后续里程碑可接入 FileDecorationProvider
-		// 显式提示二进制。
-		return bytes.toString("utf8");
+		return { type: vscode.FileType.File, ctime: 0, mtime: 0, size };
+	}
+
+	async readFile(uri: vscode.Uri): Promise<Uint8Array> {
+		const { workspace, commit, repoPath } = parseDiffUri(uri);
+		if (commit === "") {
+			return new Uint8Array(0);
+		}
+		const maxFileSize = readMaxFileSize();
+		const { bytes, size } = await loadNativeBinding().readFileAtCommit(
+			workspace,
+			commit,
+			repoPath,
+			maxFileSize,
+		);
+		if (bytes === null) {
+			// 超限：native 未把字节 load 进 NAPI Buffer，这里构造占位文本让 VSCode
+			// diff editor 以文本形式呈现"为何没加载"——文案面向用户，不是二进制
+			// 占位（VSCode 针对 FileSystemProvider 的二进制占位层只在检测到 NUL /
+			// 非法 UTF-8 时触发，而这里我们主动短路，走不了那条检测路径）。
+			logger.debug("fsprovider", "readFile 超过 maxFileSize 阈值", {
+				repoPath,
+				size,
+				maxFileSize,
+			});
+			return new TextEncoder().encode(
+				`(文件超过 jjvs.diff.maxFileSize 阈值，未加载；${size} 字节)`,
+			);
+		}
+		return bytes;
+	}
+
+	readDirectory(): never {
+		throw vscode.FileSystemError.FileNotFound();
+	}
+	createDirectory(): never {
+		throw vscode.FileSystemError.NoPermissions();
+	}
+	writeFile(): never {
+		throw vscode.FileSystemError.NoPermissions();
+	}
+	delete(): never {
+		throw vscode.FileSystemError.NoPermissions();
+	}
+	rename(): never {
+		throw vscode.FileSystemError.NoPermissions();
 	}
 }
 
@@ -221,9 +294,10 @@ export function registerDiffIntegration(
 	context: vscode.ExtensionContext,
 ): void {
 	context.subscriptions.push(
-		vscode.workspace.registerTextDocumentContentProvider(
+		vscode.workspace.registerFileSystemProvider(
 			JJVS_DIFF_SCHEME,
-			new JjvsContentProvider(),
+			new JjvsFileSystemProvider(),
+			{ isReadonly: true, isCaseSensitive: true },
 		),
 		vscode.commands.registerCommand(
 			"jjvs.openDiff",

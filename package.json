@@ -91,6 +91,12 @@
           "default": "info",
           "description": "jjvs 输出通道的日志级别。"
         },
+        "jjvs.diff.maxFileSize": {
+          "type": "number",
+          "minimum": 0,
+          "default": 52428800,
+          "markdownDescription": "diff 视图里单文件加载的最大字节数上限。超过阈值时 diff 两侧以 `(文件超过 jjvs.diff.maxFileSize 阈值，未加载；N 字节)` 占位，作为 NAPI 边界的 OOM 保底——native 拿到 size 后就短路，不把字节 load 进 NAPI Buffer。默认 52428800（50 MiB），与 VSCode 对大文件的硬上限对齐。"
+        },
         "jjvs.quickDiff.mode": {
           "type": "string",
           "enum": [

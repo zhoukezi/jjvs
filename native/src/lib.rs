@@ -30,7 +30,7 @@ pub fn native_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
 }
 
-pub use blob::{read_file_at_commit, ReadFileAtCommitTask};
+pub use blob::{read_file_at_commit, FileBlob, ReadFileAtCommitTask};
 pub use changes::{
     list_changes, FileChange, ListChangesOutcome, ListChangesResult, ListChangesStale,
     ListChangesTask,
