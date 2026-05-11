@@ -11,7 +11,7 @@ import {
 	type ListChangesStale,
 	loadNativeBinding,
 } from "./native";
-import { isJjRepository } from "./repository";
+import { isJjRepository, resolveJjRepoDir } from "./repository";
 
 // 刷新防抖：批量吸收文件系统事件（编辑、保存、外部工具写入）产生的抖动，
 // 避免对同一批改动连续触发多次 snapshot + diff。300 ms 足以合并 IDE 单次
@@ -135,6 +135,17 @@ export class JjSourceControl implements vscode.Disposable {
 	 */
 	private readonly isColocated: boolean;
 
+	/**
+	 * secondary workspace 下主 repo 的 `op_heads/` 绝对目录路径；primary /
+	 * colocated 下为 undefined。
+	 *
+	 * secondary workspace 的 `.jj/repo` 是一个指向主 workspace repo 的文件，
+	 * `op_heads/` 物理位于 folder 之外——VSCode FileSystemWatcher 只监听
+	 * folder 内部事件，对这里的 op 推进完全无感。构造期解析出该路径后再额外
+	 * 挂一个 watcher（见下方），`shouldReactToChange` 也据此放宽外部前缀匹配。
+	 */
+	private readonly externalOpHeadsDir: string | undefined;
+
 	private readonly decorationEmitter =
 		new vscode.EventEmitter<DecorationChange>();
 	/** FileDecorationProvider 订阅此事件；undefined 表示全量刷新。 */
@@ -167,6 +178,21 @@ export class JjSourceControl implements vscode.Disposable {
 			folder.uri.fsPath,
 		);
 		this.updateQuickDiffProvider();
+
+		// 解析真实 repo 目录定位 secondary workspace 的外部 op_heads 位置。任何
+		// 解析失败都会抛错（fail-fast），让 VSCode 把激活失败显式暴露出来，好
+		// 过静默装 primary 后面一堆 stale 链路默默失效。
+		const { repoDir, isSecondary } = resolveJjRepoDir(folder.uri.fsPath);
+		this.externalOpHeadsDir = isSecondary
+			? path.join(repoDir, "op_heads")
+			: undefined;
+		if (isSecondary) {
+			logger.info("scm", "secondary workspace 解析出外部 op_heads 目录", {
+				folder: folder.uri.fsPath,
+				repoDir,
+				externalOpHeadsDir: this.externalOpHeadsDir,
+			});
+		}
 
 		this.disposables.push(
 			this.changesGroup,
@@ -218,6 +244,38 @@ export class JjSourceControl implements vscode.Disposable {
 			jjWatcher.onDidDelete(onEvent),
 		);
 
+		// secondary workspace 专用 watcher：盯主 repo 的 op_heads 目录。这里的
+		// glob 以**外部绝对路径** Uri 作为 base，VSCode 文件系统 watcher 支持跨
+		// workspace folder 监听（`createFileSystemWatcher` 的 RelativePattern
+		// `base` 可以是任意 Uri）。外部 op 推进（另一个 workspace 跑 `jj new` /
+		// `jj describe` 等）会改写这里的 op_heads 文件，事件复用 onEvent，进入
+		// shouldReactToChange 后命中"外部 op_heads 前缀"分支放行。
+		if (this.externalOpHeadsDir) {
+			const externalWatcher = vscode.workspace.createFileSystemWatcher(
+				new vscode.RelativePattern(
+					vscode.Uri.file(this.externalOpHeadsDir),
+					"**",
+				),
+			);
+			this.disposables.push(
+				externalWatcher,
+				externalWatcher.onDidChange(onEvent),
+				externalWatcher.onDidCreate(onEvent),
+				externalWatcher.onDidDelete(onEvent),
+			);
+		}
+
+		// 窗口聚焦兜底：即使两层 watcher 都漏报，用户切回 VSCode 窗口的瞬间也
+		// 能触发一次刷新。scheduleRefresh 的 300ms 防抖会把聚焦事件与可能的
+		// watcher 事件合并成单次 listChanges。
+		this.disposables.push(
+			vscode.window.onDidChangeWindowState((state) => {
+				if (state.focused) {
+					this.scheduleRefresh();
+				}
+			}),
+		);
+
 		void this.refresh();
 	}
 
@@ -257,6 +315,15 @@ export class JjSourceControl implements vscode.Disposable {
 	}
 
 	private shouldReactToChange(fsPath: string): boolean {
+		// secondary workspace 下外部 op_heads 事件的 fsPath 落在 folder 之外，
+		// 下面 `rel.startsWith("..")` 的通用判定会把它拒掉。这里先放行：只要命
+		// 中 externalOpHeadsDir 前缀就认为是一次合法的 op 推进事件。
+		if (
+			this.externalOpHeadsDir &&
+			fsPath.startsWith(this.externalOpHeadsDir + path.sep)
+		) {
+			return true;
+		}
 		const rel = path.relative(this.folder.uri.fsPath, fsPath);
 		if (rel.startsWith("..")) {
 			return false;
