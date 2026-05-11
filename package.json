@@ -153,9 +153,16 @@
     "watch": "tsc -watch -p ./",
     "typecheck": "tsc --noEmit -p ./",
     "build:native": "cd native && bun install && bun run build",
-    "build:native:debug": "cd native && bun install && bun run build:debug"
+    "build:native:debug": "cd native && bun install && bun run build:debug",
+    "lint": "biome lint",
+    "lint:fix": "biome lint --write",
+    "format": "biome format",
+    "format:fix": "biome format --write",
+    "check": "bun run typecheck && biome check",
+    "check:fix": "bun run typecheck && biome check --write"
   },
   "devDependencies": {
+    "@biomejs/biome": "2.4.15",
     "@types/node": "^20.0.0",
     "@types/vscode": "^1.90.0",
     "typescript": "^5.4.0"
