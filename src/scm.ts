@@ -69,6 +69,13 @@ function buildResourceState(
 /** 装饰 URI 广播形式：`undefined` 表示整棵树需要刷新（如 .gitignore 变更）。 */
 export type DecorationChange = vscode.Uri[] | undefined;
 
+/**
+ * `doRefresh` 的返回形态。stale 与 success 均为 ok；只有 native listChanges
+ * 抛错时走 `{ ok: false, error }`，供手动刷新（M2.6）路径 throw 给命令层展示
+ * `showErrorMessage`。ABI 错配等不变式违背仍走 throw，不经由 RefreshOutcome。
+ */
+type RefreshOutcome = { ok: true } | { ok: false; error: Error };
+
 /** quickDiffProvider 的启用模式，与 `jjvs.quickDiff.mode` 配置 schema 一一对应。 */
 type QuickDiffMode = "auto" | "enabled" | "disabled";
 
@@ -104,7 +111,7 @@ export class JjSourceControl implements vscode.Disposable {
 	private readonly changesGroup: vscode.SourceControlResourceGroup;
 	private readonly disposables: vscode.Disposable[] = [];
 	private refreshTimer: ReturnType<typeof setTimeout> | undefined;
-	private refreshInFlight: Promise<void> | undefined;
+	private refreshInFlight: Promise<RefreshOutcome> | undefined;
 	private refreshPending = false;
 
 	/**
@@ -280,39 +287,72 @@ export class JjSourceControl implements vscode.Disposable {
 	}
 
 	private async refresh(): Promise<void> {
-		// 串行化：同一时间只允许一次 listChanges 在飞行中（含 snapshot+finish 会
-		// 写 .jj/working_copy/，并发调用会触发锁争用）。若刷新进行中又收到新请
-		// 求，记一个 pending 位，完成后再跑一次即可，不排队多条。
+		// watcher 驱动的刷新路径：如果已有一轮在飞行，记 pending 位等完成后再
+		// 跑一次；不阻塞调用方，结果忽略（listChanges 失败由 doRefresh 内部走
+		// logger.error，不弹窗——与 watcher 频繁触发的场景匹配）。
 		if (this.refreshInFlight) {
 			this.refreshPending = true;
 			return;
 		}
-		this.refreshInFlight = this.doRefresh().finally(() => {
+		await this.startRefreshRound();
+	}
+
+	/**
+	 * M2.6 手动刷新入口：跳过 `scheduleRefresh` 的 300ms trailing-edge 防抖，
+	 * 立刻启动一轮（或挂到已在飞行的一轮上），并把结果如实回传——`listChanges`
+	 * 失败时 throw，交由命令层 `showErrorMessage`；成功或 stale 返回。ABI 错配
+	 * 仍沿用 fail-fast，抛出的错误会同样透过本方法冒泡，VSCode 会作为命令异常
+	 * 处理。
+	 */
+	async refreshNow(): Promise<void> {
+		const outcome = await this.startRefreshRound();
+		if (!outcome.ok) {
+			throw outcome.error;
+		}
+	}
+
+	/**
+	 * 启动或挂到一轮 `doRefresh`。同一时间只允许一轮在飞行（含 snapshot+finish
+	 * 会写 `.jj/working_copy/`，并发调用会触发锁争用）。若飞行中又有请求进来，
+	 * manual 路径（`refreshNow`）直接 await 同一个 Promise；watcher 路径
+	 * （`refresh`）改记 pending 位，待当前轮完成后再跑一次。
+	 */
+	private startRefreshRound(): Promise<RefreshOutcome> {
+		if (this.refreshInFlight) {
+			return this.refreshInFlight;
+		}
+		const promise = this.doRefresh();
+		this.refreshInFlight = promise;
+		// 用 then 双参包住 cleanup，避免 .finally() 链在 doRefresh reject
+		// （ABI 不变式违背）时产生未捕获链式 promise——原始 promise 仍由
+		// refreshInFlight 暴露给调用方 await，真实错误不丢失。
+		const cleanup = () => {
 			this.refreshInFlight = undefined;
 			if (this.refreshPending) {
 				this.refreshPending = false;
 				void this.refresh();
 			}
-		});
-		await this.refreshInFlight;
+		};
+		void promise.then(cleanup, cleanup);
+		return promise;
 	}
 
-	private async doRefresh(): Promise<void> {
+	private async doRefresh(): Promise<RefreshOutcome> {
 		const refreshStart = Date.now();
 		logger.debug("scm", "refresh 开始", { folder: this.folder.uri.fsPath });
 		let outcome: ListChangesOutcome;
 		try {
 			outcome = await loadNativeBinding().listChanges(this.folder.uri.fsPath);
 		} catch (err) {
-			const message = err instanceof Error ? err.message : String(err);
-			// 刷新失败在 VSCode 里没有天然的展示位（SCM 面板本身没有错误状态），
-			// 弹窗不合适；记录到 logger 后保持现有 resourceStates 不动，让用户感
-			// 知到 diff 没变但不会卡死面板。
+			const error = err instanceof Error ? err : new Error(String(err));
+			// watcher 路径：SCM 面板本身没有错误展示位、又会反复触发，弹窗不合适，
+			// 只 logger.error 并保留 resourceStates 不动。M2.6 手动刷新路径拿到
+			// RefreshOutcome 后再由命令层决定是否 showErrorMessage。
 			logger.error("scm", "刷新失败", {
 				folder: this.folder.uri.fsPath,
-				error: message,
+				error: error.message,
 			});
-			return;
+			return { ok: false, error };
 		}
 
 		if (outcome.stale) {
@@ -342,7 +382,7 @@ export class JjSourceControl implements vscode.Disposable {
 				kind: stale.kind,
 				message: stale.message,
 			});
-			return;
+			return { ok: true };
 		}
 
 		if (!outcome.data) {
@@ -413,6 +453,7 @@ export class JjSourceControl implements vscode.Disposable {
 			commitId: result.currentCommitId,
 			elapsedMs: Date.now() - refreshStart,
 		});
+		return { ok: true };
 	}
 
 	/**
@@ -535,6 +576,35 @@ export class JjRepositoryManager implements vscode.Disposable {
 				}
 			}),
 		);
+	}
+
+	/**
+	 * M2.6 手动刷新入口：并发对所有已识别仓库触发一次刷新；一个仓库失败不影响
+	 * 其他仓库。全部成功 resolve；有任一失败时 throw 一个聚合 Error，消息里把
+	 * 失败仓库的 fsPath 与错误拼成可读文本，供命令层一次性 `showErrorMessage`。
+	 */
+	async refreshAll(): Promise<void> {
+		const repos = Array.from(this.repositories.values());
+		if (repos.length === 0) {
+			return;
+		}
+		const results = await Promise.allSettled(
+			repos.map((repo) => repo.refreshNow()),
+		);
+		const failures: string[] = [];
+		for (let i = 0; i < results.length; i++) {
+			const result = results[i];
+			if (result.status === "rejected") {
+				const folder = repos[i].folder.uri.fsPath;
+				const reason = result.reason;
+				const message =
+					reason instanceof Error ? reason.message : String(reason);
+				failures.push(`${folder}: ${message}`);
+			}
+		}
+		if (failures.length > 0) {
+			throw new Error(failures.join("; "));
+		}
 	}
 
 	/** 在所有已识别仓库中查找包含给定 URI 的那一个。 */

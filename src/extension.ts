@@ -98,6 +98,16 @@ export function activate(context: vscode.ExtensionContext): void {
 			logger.debug("command", "jjvs.copyDiagnostics");
 			await logger.copyDiagnostics(context, manager, native.nativeVersion());
 		}),
+		vscode.commands.registerCommand("jjvs.refresh", async () => {
+			logger.debug("command", "jjvs.refresh");
+			try {
+				await manager.refreshAll();
+			} catch (err) {
+				const message = err instanceof Error ? err.message : String(err);
+				logger.error("command", "jjvs.refresh 失败", { error: message });
+				void vscode.window.showErrorMessage(`jjvs 刷新失败：${message}`);
+			}
+		}),
 	);
 
 	manager.start();

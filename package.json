@@ -45,6 +45,12 @@
         "title": "复制诊断信息",
         "category": "Jujutsu",
         "icon": "$(clippy)"
+      },
+      {
+        "command": "jjvs.refresh",
+        "title": "刷新",
+        "category": "Jujutsu",
+        "icon": "$(refresh)"
       }
     ],
     "menus": {
@@ -65,6 +71,13 @@
         {
           "command": "jjvs.openFile",
           "when": "jjvs.diffEditorActive",
+          "group": "navigation"
+        }
+      ],
+      "scm/title": [
+        {
+          "command": "jjvs.refresh",
+          "when": "scmProvider == jjvs",
           "group": "navigation"
         }
       ]
