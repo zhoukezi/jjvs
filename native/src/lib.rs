@@ -14,6 +14,7 @@
 //     的错误文本，TS 侧按 Promise.reject / throw 语义处理；不做 Option<T>
 //     伪装空结果，不吞错。
 
+mod base_ignores;
 mod blob;
 mod changes;
 mod colocation;

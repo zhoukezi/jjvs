@@ -25,6 +25,14 @@ tokio = { version = "1", features = ["io-util"] }
 # 统一日志门面：native 侧所有打点（含 panic hook）走 log crate，桥接层把
 # log::Record 转成 ThreadsafeFunction<NativeLogPayload> 回到 TS 侧 logger。
 log = "0.4"
+# base_ignores 构建期要读 git 全局配置（`core.excludesFile`）。colocated 仓库
+# 直接用 jj-lib 的 GitBackend → gix::Repository → config_snapshot 就够，但非
+# colocated 场景需要我们自己调 `gix::config::File::from_globals()`，因此把
+# gix 从传递依赖提升为直接依赖。版本锁死 `=0.81.0`，与 jj-lib 0.40.0 传递
+# 依赖同版本——升级 jj-lib 时须同步核对并 bump。default-features = false
+# 避免把 gix 的 CLI 级 feature（comfort / extras 等）也拉进 cdylib。gix-config
+# 是 gix 非 optional 依赖，不启用任何顶层 feature 也能直接用 `gix::config`。
+gix = { version = "=0.81.0", default-features = false }
 
 [build-dependencies]
 # napi-build 没有发布 3.x 稳定版本（3.0.0-beta.0 已被 yank），官方 3.x 项目

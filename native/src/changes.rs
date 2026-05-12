@@ -20,7 +20,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use futures::StreamExt as _;
-use jj_lib::gitignore::GitIgnoreFile;
 use jj_lib::id_prefix::IdPrefixContext;
 use jj_lib::matchers::{EverythingMatcher, NothingMatcher};
 use jj_lib::object_id::ObjectId;
@@ -124,6 +123,13 @@ impl Task for ListChangesTask {
     fn compute(&mut self) -> Result<Self::Output> {
         let (mut workspace, repo) = load_workspace_and_repo(&self.workspace_path)?;
         let workspace_root = workspace.workspace_root().to_string_lossy().into_owned();
+
+        // base_ignores 只依赖 workspace_root 与 store（两者与 freshness reload
+        // 后的 op 无关——store 共享，磁盘 gitconfig 不随 op 变化），提前构造
+        // 可避开 `start_working_copy_mutation` 的可变借用与 &workspace 共享借
+        // 用冲突；构造失败时早停，不白占 wc 锁。
+        let base_ignores =
+            crate::base_ignores::build_base_ignores(workspace.workspace_root(), repo.store())?;
 
         let ws_name = workspace.workspace_name().to_owned();
         let initial_wc_commit_id = repo
@@ -271,7 +277,7 @@ impl Task for ListChangesTask {
         let parent_tree = parent_commit.tree();
 
         let options = SnapshotOptions {
-            base_ignores: GitIgnoreFile::empty(),
+            base_ignores: base_ignores.clone(),
             progress: None,
             start_tracking_matcher: &EverythingMatcher,
             force_tracking_matcher: &NothingMatcher,

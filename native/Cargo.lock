@@ -1647,6 +1647,7 @@ name = "jjvs-native"
 version = "0.0.1"
 dependencies = [
  "futures",
+ "gix",
  "jj-lib",
  "log",
  "napi",

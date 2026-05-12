@@ -9,37 +9,79 @@
 //
 // 缓存：Explorer 展开大目录时会对每个子项调用 provideFileDecoration，若每次
 // 都 重新读盘所有 .gitignore 会把 libuv 线程池打满。因此维护一个按 workspace
-// 划分的按目录内部字符串（`""` / `"dir/"` / `"dir/sub/"`）索引的
+// 划分、按目录内部字符串（`""` / `"dir/"` / `"dir/sub/"`）索引的
 // Arc<GitIgnoreFile> 缓存。缓存由 TS 侧在检测到 .gitignore 变更时通过
 // invalidate_ignore_cache 主动清空，不做 TTL / mtime 检查——过期 ignore 状
 // 态至多影响到下一次刷新事件。
 //
-// 与 changes.rs 的 base_ignores 关系：当前 list_changes 把 base_ignores 设
-// 为 GitIgnoreFile::empty()（ROADMAP 未决问题之一，未接入全局 gitignore /
-// core.excludesFile / info/exclude），这里保持一致——都只识别 repo 内的
-// `.gitignore`，不读全局规则。后续若把 base_ignores 接入 gix 读出的全局规
-// 则，应把 compute_chain_for_dir 的根 chain 从 GitIgnoreFile::empty() 替
-// 换为同一份 base_ignores，保证 SCM 状态与装饰判断口径一致。
+// 根链的起点 = `base_ignores::build_base_ignores` 产出的链（`core.excludesFile`
+// + `.git/info/exclude` 等），与 changes.rs 的 SnapshotOptions.base_ignores 共
+// 用同一份构造逻辑，保证 SCM 状态、文件装饰、isPathIgnored 三处判定口径一
+// 致。base_ignores 的构造本身涉及加载 Workspace / ReadonlyRepo，成本不低，因
+// 此也走 per-workspace 缓存（`PerWorkspace::base`），由同一把
+// invalidate_ignore_cache 连带清除——TS 侧在 `.gitignore` 变动或全局 ignore
+// 变动时手动刷一次即可。全局 `core.excludesFile` / `~/.config/git/ignore` 本
+// 身的变更不会被 VSCode 的 createFileSystemWatcher 捕获，需要依赖手动刷新命
+// 令作为兜底。
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use jj_lib::gitignore::GitIgnoreFile;
+use jj_lib::repo::Repo;
 use napi::bindgen_prelude::{AsyncTask, Env, Error, Result, Task};
 use napi_derive::napi;
 
-type PerWorkspaceCache = HashMap<String, Arc<GitIgnoreFile>>;
-type GlobalCache = HashMap<PathBuf, PerWorkspaceCache>;
+use crate::base_ignores::build_base_ignores;
+use crate::workspace_loader::load_workspace_and_repo;
+
+/// 每个 workspace 独立的 ignore 缓存。`base` 存 base_ignores 本身（一次
+/// 构造后复用），`dirs` 存各层目录累积链（含根目录 `""`，其 parent 就是
+/// `base`）。两者一并随 `invalidate_ignore_cache` 清除。
+#[derive(Default)]
+struct PerWorkspace {
+    base: Option<Arc<GitIgnoreFile>>,
+    dirs: HashMap<String, Arc<GitIgnoreFile>>,
+}
+
+type GlobalCache = HashMap<PathBuf, PerWorkspace>;
 
 fn cache() -> &'static Mutex<GlobalCache> {
     static CACHE: OnceLock<Mutex<GlobalCache>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// 取（或构造）指定 workspace 的 base_ignores。构造时需要加载 jj workspace
+/// 与 repo，属于一次性开销；随后 Explorer 对同 workspace 的千级
+/// `provideFileDecoration` 调用都走缓存命中路径。
+fn get_or_build_base_ignores(workspace_root: &Path) -> Result<Arc<GitIgnoreFile>> {
+    {
+        let guard = cache().lock().expect("ignore cache poisoned");
+        if let Some(ws_cache) = guard.get(workspace_root) {
+            if let Some(base) = &ws_cache.base {
+                return Ok(base.clone());
+            }
+        }
+    }
+
+    // Workspace::load 开销主要在打开 store 句柄，本身并不贵；base_ignores
+    // 构造只需 store，但 jj-lib 没有"只打开 store"的公开入口，仍须经 Workspace
+    // 路径。workspace 本身用完即弃，用 `_` 忽略。
+    let (_workspace, repo) = load_workspace_and_repo(workspace_root)?;
+    let base = build_base_ignores(workspace_root, repo.store())?;
+
+    let mut guard = cache().lock().expect("ignore cache poisoned");
+    let ws_cache = guard
+        .entry(workspace_root.to_path_buf())
+        .or_default();
+    ws_cache.base = Some(base.clone());
+    Ok(base)
+}
+
 /// 构造或复用 `workspace_root` 下、内部目录字符串 `dir_internal` 对应的
 /// 累积 GitIgnoreFile。`dir_internal` 形式：
-///   - `""`：workspace 根
+///   - `""`：workspace 根（parent = base_ignores）
 ///   - `"a/"`：workspace 根下的 a 目录
 ///   - `"a/b/"`：a/b 目录（末尾永远带 `/`）
 fn compute_chain_for_dir(
@@ -49,15 +91,15 @@ fn compute_chain_for_dir(
     {
         let guard = cache().lock().expect("ignore cache poisoned");
         if let Some(ws_cache) = guard.get(workspace_root) {
-            if let Some(chain) = ws_cache.get(dir_internal) {
+            if let Some(chain) = ws_cache.dirs.get(dir_internal) {
                 return Ok(chain.clone());
             }
         }
     }
 
-    // 先递归拿父级链，不持锁以避免跨层 lock。
+    // 先递归拿父级链，不持锁以避免跨层 lock。根目录的 parent 是 base_ignores。
     let parent_chain = if dir_internal.is_empty() {
-        GitIgnoreFile::empty()
+        get_or_build_base_ignores(workspace_root)?
     } else {
         let parent_internal = parent_dir_internal(dir_internal);
         compute_chain_for_dir(workspace_root, &parent_internal)?
@@ -85,8 +127,10 @@ fn compute_chain_for_dir(
     };
 
     let mut guard = cache().lock().expect("ignore cache poisoned");
-    let ws_cache = guard.entry(workspace_root.to_path_buf()).or_default();
-    ws_cache.insert(dir_internal.to_string(), chain.clone());
+    let ws_cache = guard
+        .entry(workspace_root.to_path_buf())
+        .or_default();
+    ws_cache.dirs.insert(dir_internal.to_string(), chain.clone());
     Ok(chain)
 }
 
@@ -156,8 +200,10 @@ pub fn is_path_ignored(
     })
 }
 
-/// 清空指定 workspace 下的 ignore 链缓存。TS 侧在检测到 `.gitignore` 变更
-/// 时调用。传入路径与 Workspace::load 期望的路径形式一致（绝对路径）。
+/// 清空指定 workspace 下的 ignore 链缓存（含 base_ignores 与各层目录链）。
+/// TS 侧在检测到 `.gitignore` 变更时调用；全局 `core.excludesFile` / XDG
+/// 级别的变更需通过手动刷新命令触发。传入路径与 Workspace::load 期望的路
+/// 径形式一致（绝对路径）。
 #[napi]
 pub fn invalidate_ignore_cache(workspace_path: String) {
     let key = PathBuf::from(workspace_path);
