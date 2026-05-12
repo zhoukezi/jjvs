@@ -27,6 +27,25 @@
   ],
   "main": "./out/extension.js",
   "contributes": {
+    "languages": [
+      {
+        "id": "jjdescription",
+        "aliases": [
+          "JJ Description"
+        ],
+        "extensions": [
+          ".jjdescription"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "jjdescription",
+        "scopeName": "text.jjdescription",
+        "path": "./syntaxes/jjdescription.tmLanguage.json"
+      }
+    ],
     "commands": [
       {
         "command": "jjvs.openFile",
