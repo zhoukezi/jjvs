@@ -7,6 +7,15 @@ tsconfig.json
 *.vsix
 bun.lock
 
+# VCS 仓库
+.git/**
+.jj/**
+
+# 仅开发期使用的配置与项目内部文档
+biome.json
+CLAUDE.md
+ROADMAP.md
+
 # native 子项目：仅保留 .node 产物，源码与中间产物一律排除
 native/src/**
 native/target/**
